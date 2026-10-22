@@ -1,5 +1,6 @@
 import os
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -9,6 +10,19 @@ load_dotenv(PROJECT_ROOT / ".env", override=False)
 
 
 def _read_int(name: str, default: int, minimum: int = 1) -> int:
+    """Parse an integer environment variable with boundary validation.
+
+    Args:
+        name: Environment variable name.
+        default: Fallback integer value if variable is unset.
+        minimum: Lowest allowed value.
+
+    Returns:
+        Validated integer value.
+
+    Raises:
+        ValueError: If value cannot be parsed or falls below minimum.
+    """
     raw_value = os.getenv(name, str(default))
 
     try:
@@ -24,6 +38,8 @@ def _read_int(name: str, default: int, minimum: int = 1) -> int:
 
 @dataclass(frozen=True, slots=True)
 class Settings:
+    """Immutable application settings container."""
+
     app_name: str
     app_version: str
     environment: str
@@ -38,7 +54,16 @@ class Settings:
     chroma_persist_directory: Path
 
 
+@lru_cache(maxsize=1)
 def get_settings() -> Settings:
+    """Load, validate, and cache application settings from the environment.
+
+    Returns:
+        Cached immutable Settings instance.
+
+    Raises:
+        ValueError: If any configuration value violates validation rules.
+    """
     log_level = os.getenv("LOG_LEVEL", "INFO").strip().upper()
     valid_log_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 

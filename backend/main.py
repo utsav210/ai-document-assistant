@@ -19,6 +19,7 @@ app = FastAPI(
 
 @app.get("/", tags=["system"])
 def root() -> dict[str, str]:
+    """Return top-level API metadata and operational status."""
     return {
         "service": settings.app_name,
         "status": "running",
@@ -27,6 +28,7 @@ def root() -> dict[str, str]:
 
 @app.get("/health", tags=["system"])
 def health() -> dict[str, str]:
+    """Return service health status for container and monitoring probes."""
     logger.debug("Health check requested")
 
     return {
