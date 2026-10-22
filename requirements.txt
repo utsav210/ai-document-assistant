@@ -7,6 +7,8 @@ langchain-groq
 langchain-chroma
 langchain-huggingface[full]
 langchain-docling[local]
+docling
+langchain-community
 
 python-dotenv
 python-multipart
