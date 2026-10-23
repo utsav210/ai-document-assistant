@@ -41,10 +41,17 @@ def _split_by_page(content: str) -> list[tuple[int | None, str]]:
 def create_chunks(
     parsed: ParsedDocument,
     *,
+    session_id: str,
     chunk_size: int | None = None,
     chunk_overlap: int | None = None,
 ) -> list[Document]:
     """Split parsed content into searchable chunks with source metadata."""
+    if session_id is not None:
+        if not isinstance(session_id, str) or not session_id.strip():
+            raise ValueError("session_id must be a non-empty string.")
+        session_id = session_id.strip()
+        if len(session_id) > 128:
+            raise ValueError("session_id must not exceed 128 characters.")
     settings = get_settings()
     size = chunk_size if chunk_size is not None else settings.chunk_size
     overlap = chunk_overlap if chunk_overlap is not None else settings.chunk_overlap
@@ -60,7 +67,9 @@ def create_chunks(
     if not parsed.content.strip():
         raise ValueError("Cannot chunk an empty document.")
 
-    source_identity = f"{parsed.file_type}:{parsed.source_name.casefold()}"
+    source_identity = (
+        f"{session_id}:{parsed.file_type}:{parsed.source_name.casefold()}"
+    )
     source_id = hashlib.sha256(source_identity.encode("utf-8")).hexdigest()[:24]
 
     content_hash = hashlib.sha256(parsed.content.encode("utf-8")).hexdigest()
@@ -78,6 +87,7 @@ def create_chunks(
     for page_number, text in _split_by_page(parsed.content):
         metadata = {
             "source_id": source_id,
+            "session_id": session_id,
             "source_name": parsed.source_name,
             "file_type": parsed.file_type,
             "extraction_method": parsed.extraction_method,
