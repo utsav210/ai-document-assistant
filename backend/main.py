@@ -8,7 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
@@ -174,6 +174,7 @@ async def parse_uploaded_document(
 
 class DocumentIndexResponse(BaseModel):
     status: str
+    session_id: str
     source_id: str
     source_name: str
     file_type: str
@@ -196,8 +197,23 @@ async def index_uploaded_document(
         UploadFile,
         File(description="PDF, DOCX or TXT document"),
     ],
+    session_id: Annotated[
+        str,
+        Form(
+            min_length=1,
+            max_length=128,
+            description="Identifier of the chat session that owns this document",
+        ),
+    ],
 ) -> DocumentIndexResponse:
     """Parse, chunk, embed, and persist an uploaded document."""
+    session_id = session_id.strip()
+
+    if not session_id:
+        raise HTTPException(
+            status_code=422,
+            detail="session_id must not be empty.",
+        )
     async with _stage_upload(file) as (original_name, temporary_path):
         try:
             parsed = await run_in_threadpool(
@@ -222,6 +238,7 @@ async def index_uploaded_document(
             result = await run_in_threadpool(
                 index_parsed_document,
                 parsed,
+                session_id=session_id,
             )
         except Exception as exc:
             logger.exception(
@@ -238,6 +255,7 @@ async def index_uploaded_document(
 
         return DocumentIndexResponse(
             status="indexed",
+            session_id=session_id,
             source_id=result["source_id"],
             source_name=original_name,
             file_type=parsed.file_type,

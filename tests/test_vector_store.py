@@ -9,12 +9,22 @@ class FakeVectorStore:
         self.documents = {}
 
     def get(self, *, where, include):
-        source_id = where["source_id"]
+        source_id = where.get("source_id")
+        session_id = where.get("session_id")
+        if "$and" in where:
+            for item in where["$and"]:
+                if "source_id" in item:
+                    source_id = item["source_id"]
+                if "session_id" in item:
+                    session_id = item["session_id"]
 
         matching = {
             document_id: document
             for document_id, document in self.documents.items()
-            if document.metadata.get("source_id") == source_id
+            if (source_id is None or document.metadata.get("source_id") == source_id)
+            and (
+                session_id is None or document.metadata.get("session_id") == session_id
+            )
         }
 
         return {
@@ -73,3 +83,22 @@ def test_indexing_replaces_old_chunks_and_removes_stale_chunks(
 
     stored_document = next(iter(fake_store.documents.values()))
     assert stored_document.page_content == "Updated security notes."
+
+
+def test_indexing_with_session_id_isolates_metadata(monkeypatch):
+    fake_store = FakeVectorStore()
+    monkeypatch.setattr(vector_store, "get_vector_store", lambda: fake_store)
+
+    doc = ParsedDocument(
+        source_name="session_doc.txt",
+        file_type="txt",
+        content="User confidential session notes.",
+        extraction_method="text_reader",
+    )
+
+    result = vector_store.index_parsed_document(doc, session_id="user-session-42")
+
+    assert result["session_id"] == "user-session-42"
+    assert len(fake_store.documents) == 1
+    stored = next(iter(fake_store.documents.values()))
+    assert stored.metadata.get("session_id") == "user-session-42"

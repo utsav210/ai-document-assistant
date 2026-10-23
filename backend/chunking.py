@@ -41,7 +41,7 @@ def _split_by_page(content: str) -> list[tuple[int | None, str]]:
 def create_chunks(
     parsed: ParsedDocument,
     *,
-    session_id: str,
+    session_id: str | None = None,
     chunk_size: int | None = None,
     chunk_overlap: int | None = None,
 ) -> list[Document]:
@@ -67,8 +67,9 @@ def create_chunks(
     if not parsed.content.strip():
         raise ValueError("Cannot chunk an empty document.")
 
+    session_prefix = f"{session_id}:" if session_id else ""
     source_identity = (
-        f"{session_id}:{parsed.file_type}:{parsed.source_name.casefold()}"
+        f"{session_prefix}{parsed.file_type}:{parsed.source_name.casefold()}"
     )
     source_id = hashlib.sha256(source_identity.encode("utf-8")).hexdigest()[:24]
 
@@ -87,12 +88,14 @@ def create_chunks(
     for page_number, text in _split_by_page(parsed.content):
         metadata = {
             "source_id": source_id,
-            "session_id": session_id,
             "source_name": parsed.source_name,
             "file_type": parsed.file_type,
             "extraction_method": parsed.extraction_method,
             "content_hash": content_hash,
         }
+
+        if session_id is not None:
+            metadata["session_id"] = session_id
 
         if page_number is not None:
             metadata["page_number"] = page_number

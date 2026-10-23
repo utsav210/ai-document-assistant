@@ -17,6 +17,7 @@ _INDEX_LOCK = Lock()
 def get_embeddings() -> HuggingFaceEmbeddings:
     """Load and reuse the local embedding model."""
     settings = get_settings()
+
     return HuggingFaceEmbeddings(
         model_name=settings.embedding_model,
         model_kwargs={"device": "cpu"},
@@ -28,7 +29,10 @@ def get_embeddings() -> HuggingFaceEmbeddings:
 def get_vector_store() -> Chroma:
     """Create or reopen the persistent Chroma collection."""
     settings = get_settings()
-    settings.chroma_persist_directory.mkdir(parents=True, exist_ok=True)
+    settings.chroma_persist_directory.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     return Chroma(
         collection_name=settings.chroma_collection_name,
@@ -37,36 +41,56 @@ def get_vector_store() -> Chroma:
     )
 
 
-def index_parsed_document(parsed: ParsedDocument) -> dict:
-    """Embed and persist a parsed document's chunks."""
-    chunks = create_chunks(parsed)
+def index_parsed_document(
+    parsed: ParsedDocument,
+    *,
+    session_id: str | None = None,
+) -> dict:
+    """Index a parsed document within an optional owning session."""
+    chunks = create_chunks(
+        parsed,
+        session_id=session_id,
+    )
 
     source_id = chunks[0].metadata["source_id"]
     chunk_ids = [f"{source_id}-{index:06d}" for index in range(len(chunks))]
 
     store = get_vector_store()
 
+    if session_id:
+        where_filter = {
+            "$and": [
+                {"session_id": session_id},
+                {"source_id": source_id},
+            ]
+        }
+    else:
+        where_filter = {"source_id": source_id}
+
     with _INDEX_LOCK:
+        # Only inspect chunks belonging to this session and source.
         existing = store.get(
-            where={"source_id": source_id},
+            where=where_filter,
             include=["metadatas"],
         )
+
         existing_ids = set(existing.get("ids", []))
 
-        # Add or update the current chunks.
+        # Add new chunks or update existing chunks with the same IDs.
         store.add_documents(
             documents=chunks,
             ids=chunk_ids,
         )
 
-        # Remove obsolete chunks if the document became shorter.
+        # Remove obsolete chunks only from this session and source.
         stale_ids = list(existing_ids - set(chunk_ids))
 
         if stale_ids:
             store.delete(ids=stale_ids)
 
     settings = get_settings()
-    return {
+
+    result = {
         "source_id": source_id,
         "source_name": parsed.source_name,
         "file_type": parsed.file_type,
@@ -76,3 +100,8 @@ def index_parsed_document(parsed: ParsedDocument) -> dict:
         "collection_name": settings.chroma_collection_name,
         "persist_directory": str(settings.chroma_persist_directory),
     }
+
+    if session_id:
+        result["session_id"] = session_id
+
+    return result

@@ -73,3 +73,38 @@ def test_empty_document_is_rejected():
 
     with pytest.raises(ValueError, match="empty document"):
         create_chunks(parsed)
+
+
+def test_chunks_with_session_id():
+    parsed = ParsedDocument(
+        source_name="notes.txt",
+        file_type="txt",
+        content="First paragraph.\n\nSecond paragraph.",
+        extraction_method="text_reader",
+    )
+
+    chunks_without = create_chunks(parsed)
+    chunks_with = create_chunks(parsed, session_id="user-session-123")
+
+    assert all("session_id" not in chunk.metadata for chunk in chunks_without)
+    assert all(
+        chunk.metadata["session_id"] == "user-session-123" for chunk in chunks_with
+    )
+    assert (
+        chunks_with[0].metadata["source_id"] != chunks_without[0].metadata["source_id"]
+    )
+
+
+def test_chunks_with_invalid_session_id():
+    parsed = ParsedDocument(
+        source_name="notes.txt",
+        file_type="txt",
+        content="First paragraph.\n\nSecond paragraph.",
+        extraction_method="text_reader",
+    )
+
+    with pytest.raises(ValueError, match="session_id must be a non-empty string"):
+        create_chunks(parsed, session_id="   ")
+
+    with pytest.raises(ValueError, match="session_id must not exceed 128 characters"):
+        create_chunks(parsed, session_id="s" * 129)
