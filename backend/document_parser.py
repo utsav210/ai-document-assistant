@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
@@ -67,14 +68,10 @@ def _docling_fallback(
         with _DOCLING_CONVERT_LOCK:
             result = converter.convert(str(path))
 
-        content = _normalize_markdown(
-            result.document.export_to_markdown()
-        )
+        content = _normalize_markdown(result.document.export_to_markdown())
 
         if not content:
-            raise DocumentParsingError(
-                "Docling returned empty document content."
-            )
+            raise DocumentParsingError("Docling returned empty document content.")
 
         return ParsedDocument(
             source_name=path.name,
@@ -110,9 +107,7 @@ def _pdf_page_chunks_to_markdown(chunks) -> str:
         metadata = chunk.get("metadata") or {}
         page_number = metadata.get("page", index)
 
-        sections.append(
-            f"<!-- Page {page_number} -->\n\n{page_text}"
-        )
+        sections.append(f"<!-- Page {page_number} -->\n\n{page_text}")
 
     return _normalize_markdown("\n\n".join(sections))
 
@@ -130,9 +125,7 @@ def _parse_pdf(path: Path) -> ParsedDocument:
         content = _pdf_page_chunks_to_markdown(chunks)
 
         if not content:
-            raise DocumentParsingError(
-                "PyMuPDF4LLM returned empty content."
-            )
+            raise DocumentParsingError("PyMuPDF4LLM returned empty content.")
 
         page_count = len(chunks) if isinstance(chunks, list) else None
 
@@ -178,11 +171,7 @@ def _render_paragraph(paragraph) -> str:
     if not text:
         return ""
 
-    style_name = (
-        paragraph.style.name
-        if paragraph.style is not None
-        else ""
-    )
+    style_name = paragraph.style.name if paragraph.style is not None else ""
 
     heading_match = re.match(
         r"Heading\s*([1-6])",
@@ -303,32 +292,24 @@ def _read_text_file(path: Path) -> str:
 
     if b"\x00" in raw[:512]:
         try:
-            return raw.decode("utf-16").replace(
-                "\r\n", "\n"
-            ).replace("\r", "\n")
+            return raw.decode("utf-16").replace("\r\n", "\n").replace("\r", "\n")
         except UnicodeDecodeError:
             pass
 
     for encoding in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
         try:
-            return raw.decode(encoding).replace(
-                "\r\n", "\n"
-            ).replace("\r", "\n")
+            return raw.decode(encoding).replace("\r\n", "\n").replace("\r", "\n")
         except UnicodeDecodeError:
             continue
 
-    raise DocumentParsingError(
-        f"Could not decode text file: {path.name}"
-    )
+    raise DocumentParsingError(f"Could not decode text file: {path.name}")
 
 
 def _parse_txt(path: Path) -> ParsedDocument:
     content = _read_text_file(path).strip()
 
     if not content:
-        raise DocumentParsingError(
-            f"Text file '{path.name}' is empty."
-        )
+        raise DocumentParsingError(f"Text file '{path.name}' is empty.")
 
     return ParsedDocument(
         source_name=path.name,
@@ -360,3 +341,53 @@ def parse_document(file_path: str | Path) -> ParsedDocument:
         return _parse_docx(path)
 
     return _parse_txt(path)
+
+
+def lazy_parse_document(
+    file_path: str | Path,
+) -> Iterator[tuple[int | None, str]]:
+    """Lazily yield (page_number, text) segments from a supported document."""
+    path = Path(file_path).expanduser().resolve()
+
+    if not path.is_file():
+        raise FileNotFoundError(f"Document not found: {path}")
+
+    extension = path.suffix.lower()
+
+    if extension not in SUPPORTED_EXTENSIONS:
+        raise DocumentParsingError(
+            f"Unsupported file type '{extension}'. "
+            f"Supported types: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
+        )
+
+    if extension == ".pdf":
+        try:
+            import pymupdf
+            import pymupdf4llm
+
+            doc = pymupdf.open(str(path))
+            for page_idx in range(len(doc)):
+                chunk = pymupdf4llm.to_markdown(doc, pages=[page_idx])
+                normalized = _normalize_markdown(chunk)
+                if normalized:
+                    yield (page_idx + 1, normalized)
+            return
+        except Exception:  # noqa: BLE001
+            parsed = _parse_pdf(path)
+            matches = list(re.finditer(r"<!-- Page (\d+) -->", parsed.content))
+            if not matches:
+                yield (1, parsed.content)
+                return
+            for idx, match in enumerate(matches):
+                end = (
+                    matches[idx + 1].start()
+                    if idx + 1 < len(matches)
+                    else len(parsed.content)
+                )
+                text = _normalize_markdown(parsed.content[match.end() : end])
+                if text:
+                    yield (int(match.group(1)), text)
+            return
+
+    parsed = parse_document(path)
+    yield (None, parsed.content)

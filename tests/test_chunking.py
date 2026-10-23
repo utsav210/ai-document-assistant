@@ -108,3 +108,20 @@ def test_chunks_with_invalid_session_id():
 
     with pytest.raises(ValueError, match="session_id must not exceed 128 characters"):
         create_chunks(parsed, session_id="s" * 129)
+
+
+def test_lazy_create_chunks_streams_iteratively():
+    from backend.chunking import lazy_create_chunks
+
+    parsed = ParsedDocument(
+        source_name="stream.txt",
+        file_type="txt",
+        content="Paragraph 1.\n\nParagraph 2.\n\nParagraph 3.",
+        extraction_method="text_reader",
+    )
+
+    generator = lazy_create_chunks(parsed, chunk_size=15, chunk_overlap=0)
+    first_chunk = next(generator)
+    assert first_chunk.metadata["chunk_index"] == 0
+    remaining = list(generator)
+    assert len(remaining) >= 2

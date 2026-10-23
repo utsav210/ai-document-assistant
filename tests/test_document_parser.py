@@ -73,3 +73,32 @@ def test_pdf_parser_uses_pymupdf4llm(tmp_path, monkeypatch):
     assert result.extraction_method == "pymupdf4llm"
     assert result.page_count == 1
     assert "PDF parser test" in result.content
+
+
+def test_lazy_parse_document_txt(tmp_path):
+    path = tmp_path / "stream.txt"
+    path.write_text("Line A\nLine B\n", encoding="utf-8")
+
+    generator = document_parser.lazy_parse_document(path)
+    segments = list(generator)
+
+    assert len(segments) == 1
+    assert segments[0][0] is None
+    assert "Line A" in segments[0][1]
+
+
+def test_lazy_parse_document_pdf(tmp_path, monkeypatch):
+    path = tmp_path / "stream.pdf"
+
+    pdf = pymupdf.open()
+    page = pdf.new_page()
+    page.insert_text((72, 72), "Stream test page")
+    pdf.save(path)
+    pdf.close()
+
+    generator = document_parser.lazy_parse_document(path)
+    segments = list(generator)
+
+    assert len(segments) >= 1
+    assert segments[0][0] == 1
+    assert "Stream test page" in segments[0][1]

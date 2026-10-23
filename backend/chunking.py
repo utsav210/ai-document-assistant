@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Iterator
 
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -38,14 +39,14 @@ def _split_by_page(content: str) -> list[tuple[int | None, str]]:
     return segments
 
 
-def create_chunks(
+def lazy_create_chunks(
     parsed: ParsedDocument,
     *,
     session_id: str | None = None,
     chunk_size: int | None = None,
     chunk_overlap: int | None = None,
-) -> list[Document]:
-    """Split parsed content into searchable chunks with source metadata."""
+) -> Iterator[Document]:
+    """Split parsed content iteratively into searchable chunks."""
     if session_id is not None:
         if not isinstance(session_id, str) or not session_id.strip():
             raise ValueError("session_id must be a non-empty string.")
@@ -83,7 +84,7 @@ def create_chunks(
         separators=["\n\n", "\n", " ", ""],
     )
 
-    documents: list[Document] = []
+    chunk_index = 0
 
     for page_number, text in _split_by_page(parsed.content):
         metadata = {
@@ -109,8 +110,27 @@ def create_chunks(
             if not chunk.page_content.strip():
                 continue
 
-            chunk.metadata["chunk_index"] = len(documents)
-            documents.append(chunk)
+            chunk.metadata["chunk_index"] = chunk_index
+            chunk_index += 1
+            yield chunk
+
+
+def create_chunks(
+    parsed: ParsedDocument,
+    *,
+    session_id: str | None = None,
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
+) -> list[Document]:
+    """Split parsed content into searchable chunks with source metadata."""
+    documents = list(
+        lazy_create_chunks(
+            parsed,
+            session_id=session_id,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+        )
+    )
 
     if not documents:
         raise ValueError("No usable chunks were produced.")
