@@ -286,3 +286,95 @@ def test_rewrite_follow_up_fallback_on_error(monkeypatch):
     rewritten = rag_service._rewrite_follow_up("Is it required?", history)
     assert "Securing data at rest" in rewritten
     assert "Human: Is it required?" in rewritten
+
+
+def test_extract_failed_generation_from_body():
+    class DummyGroqError(Exception):
+        def __init__(self):
+            super().__init__("Tool use failed")
+            self.body = {
+                "error": {
+                    "message": "Tool choice is required, but model did not call a tool",
+                    "code": "tool_use_failed",
+                    "failed_generation": "| Role | Name |\n|---|---|\n| Lead | Mira |",
+                }
+            }
+
+    extracted = rag_service._extract_failed_generation(DummyGroqError())
+    assert extracted == "| Role | Name |\n|---|---|\n| Lead | Mira |"
+
+
+def test_extract_failed_generation_from_string():
+    err_str = "Error code: 400 - {'error': {'code': 'tool_use_failed', 'failed_generation': 'Pilot team details'}}"
+    exc = Exception(err_str)
+    extracted = rag_service._extract_failed_generation(exc)
+    assert extracted == "Pilot team details"
+
+
+def test_ask_question_recovers_from_groq_tool_use_failed(monkeypatch):
+    test_doc = Document(
+        page_content="Team: Mira Shah is Project Owner.",
+        metadata={"source_name": "report.docx", "page_number": 1},
+    )
+
+    class FakeVectorStore:
+        def similarity_search_with_relevance_scores(self, *args, **kwargs):
+            return [(test_doc, 0.9)]
+
+    class DummyGroqToolError(Exception):
+        def __init__(self):
+            super().__init__("Tool use failed")
+            self.body = {
+                "error": {
+                    "message": "Tool choice is required, but model did not call a tool",
+                    "code": "tool_use_failed",
+                    "failed_generation": "Mira Shah is the Project Owner [report.docx].",
+                }
+            }
+
+    class FailingStructuredLLM:
+        def invoke(self, messages):
+            raise DummyGroqToolError()
+
+    class FakeLLM:
+        def with_structured_output(self, schema):
+            return FailingStructuredLLM()
+
+        def invoke(self, messages):
+            return AIMessage(content="Fallback answer")
+
+    monkeypatch.setattr(rag_service, "get_vector_store", lambda: FakeVectorStore())
+    monkeypatch.setattr(rag_service, "get_llm", lambda: FakeLLM())
+
+    result = ask_question("test-session", "Who is the project owner?")
+    assert "Mira Shah is the Project Owner" in result["answer"]
+    assert len(result["sources"]) == 1
+
+
+def test_ask_question_falls_back_to_standard_invoke_when_structured_fails(monkeypatch):
+    test_doc = Document(
+        page_content="Database port is 5432.",
+        metadata={"source_name": "config.txt", "page_number": 1},
+    )
+
+    class FakeVectorStore:
+        def similarity_search_with_relevance_scores(self, *args, **kwargs):
+            return [(test_doc, 0.9)]
+
+    class FailingStructuredLLM:
+        def invoke(self, messages):
+            raise ValueError("Schema parse error without failed_generation")
+
+    class FakeLLM:
+        def with_structured_output(self, schema):
+            return FailingStructuredLLM()
+
+        def invoke(self, messages):
+            return AIMessage(content="The database port is 5432 [config.txt].")
+
+    monkeypatch.setattr(rag_service, "get_vector_store", lambda: FakeVectorStore())
+    monkeypatch.setattr(rag_service, "get_llm", lambda: FakeLLM())
+
+    result = ask_question("test-session", "What is the port?")
+    assert "5432" in result["answer"]
+    assert len(result["sources"]) == 1

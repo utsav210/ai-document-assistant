@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from functools import lru_cache
 from threading import Lock
 from typing import Any
@@ -308,34 +309,105 @@ def _build_context(documents: list[Document]) -> str:
     return "\n\n---\n\n".join(sections)
 
 
+def _extract_failed_generation(exc: Exception) -> str | None:
+    """Extract failed_generation text from Groq/OpenAI tool_use_failed errors."""
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        error_dict = body.get("error")
+        if isinstance(error_dict, dict):
+            failed = error_dict.get("failed_generation")
+            if failed and isinstance(failed, str):
+                return failed.strip()
+
+    response = getattr(exc, "response", None)
+    if response is not None and hasattr(response, "json"):
+        try:
+            data = response.json()
+            if isinstance(data, dict):
+                error_obj = data.get("error", {})
+                if isinstance(error_obj, dict):
+                    failed = error_obj.get("failed_generation")
+                    if failed and isinstance(failed, str):
+                        return failed.strip()
+        except (ValueError, TypeError, AttributeError):
+            logger.debug("Failed to extract JSON error payload from response object")
+
+    exc_str = str(exc)
+    if "failed_generation" in exc_str:
+        match = re.search(
+            r"['\"]failed_generation['\"]\s*:\s*(['\"])(.*?)\1(?:\s*,\s*['\"]|\s*})",
+            exc_str,
+            re.DOTALL,
+        )
+        if match:
+            raw_content = match.group(2)
+            try:
+                raw_content = raw_content.encode("utf-8").decode("unicode_escape")
+            except (UnicodeDecodeError, UnicodeEncodeError):
+                logger.debug(
+                    "Failed unicode escape decoding on failed_generation string"
+                )
+            if raw_content.strip():
+                return raw_content.strip()
+
+    return None
+
+
+def _answer_from_text(content: str) -> GroundedAnswer:
+    """Construct GroundedAnswer from raw text with refusal check."""
+    cleaned = content.strip()
+    if not cleaned:
+        raise RuntimeError("The language model returned an empty answer.")
+
+    is_unknown = (
+        "not found in the uploaded documents" in cleaned.lower()
+        or "couldn't find enough information" in cleaned.lower()
+    )
+    return GroundedAnswer(
+        has_sufficient_context=not is_unknown,
+        answer=cleaned if not is_unknown else UNKNOWN_ANSWER,
+    )
+
+
 def _generate_grounded_answer(messages: list) -> GroundedAnswer:
-    """Generate answer using LangChain's structured output guardrail."""
+    """Generate answer using LangChain structured output guardrail with graceful fallback."""
     llm = get_llm()
 
-    try:
-        if hasattr(llm, "with_structured_output"):
+    # 1. Attempt structured output
+    if hasattr(llm, "with_structured_output"):
+        try:
             structured_llm = llm.with_structured_output(GroundedAnswer)
             result = structured_llm.invoke(messages)
             if isinstance(result, GroundedAnswer):
                 return result
             if isinstance(result, dict):
                 return GroundedAnswer(**result)
+        except Exception as struct_exc:  # noqa: BLE001
+            # Groq tool_use_failed recovery: when the model outputs raw Markdown tables
+            # instead of function call JSON, Groq includes the complete answer in failed_generation
+            recovered = _extract_failed_generation(struct_exc)
+            if recovered:
+                logger.info(
+                    "Recovered grounded answer from Groq failed_generation payload."
+                )
+                return _answer_from_text(recovered)
 
+            logger.warning(
+                "Structured output invocation failed; falling back to standard LLM invoke: %s",
+                struct_exc,
+            )
+
+    # 2. Fall back to standard invocation (does not force tool/function calling)
+    try:
         raw = llm.invoke(messages)
         content = _message_text(raw.content if hasattr(raw, "content") else raw)
-        if not content:
-            raise RuntimeError("The language model returned an empty answer.")
-
-        is_unknown = (
-            "not found in the uploaded documents" in content.lower()
-            or "couldn't find enough information" in content.lower()
-        )
-        return GroundedAnswer(
-            has_sufficient_context=not is_unknown,
-            answer=content if not is_unknown else UNKNOWN_ANSWER,
-        )
-
+        return _answer_from_text(content)
     except Exception as exc:
+        recovered = _extract_failed_generation(exc)
+        if recovered:
+            logger.info("Recovered grounded answer from invoke error payload.")
+            return _answer_from_text(recovered)
+
         logger.exception("Grounded answer generation failed")
         raise RuntimeError(
             "The language model could not generate an answer. "
