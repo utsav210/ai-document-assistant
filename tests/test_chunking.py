@@ -125,3 +125,22 @@ def test_lazy_create_chunks_streams_iteratively():
     assert first_chunk.metadata["chunk_index"] == 0
     remaining = list(generator)
     assert len(remaining) >= 2
+
+
+def test_chunk_overlap_preserves_boundary_words():
+    parsed = ParsedDocument(
+        source_name="overlap_test.txt",
+        file_type="txt",
+        content="Alpha Bravo Charlie Delta Echo Foxtrot Golf Hotel India",
+        extraction_method="text_reader",
+    )
+
+    chunks = create_chunks(parsed, chunk_size=30, chunk_overlap=12)
+    assert len(chunks) >= 2
+    # Verify overlapping words between consecutive chunks
+    assert "Charlie" in chunks[0].page_content or "Delta" in chunks[0].page_content
+    # The second chunk must share boundary content from the first
+    overlap_found = any(
+        word in chunks[1].page_content for word in chunks[0].page_content.split()
+    )
+    assert overlap_found

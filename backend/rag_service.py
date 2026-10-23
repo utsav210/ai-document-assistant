@@ -214,14 +214,24 @@ def _rewrite_follow_up(question: str, history: list[dict[str, str]]) -> str:
 def _retrieve_context(
     standalone_question: str,
     *,
+    session_id: str | None = None,
     source_name: str | None = None,
 ) -> tuple[list[Document], list[dict[str, Any]]]:
     """Retrieve relevant chunks from vector store and build unique source citations."""
     settings = get_settings()
 
     search_kwargs: dict[str, Any] = {"k": settings.retrieval_top_k}
+
+    filter_conditions: list[dict[str, Any]] = []
+    if session_id:
+        filter_conditions.append({"session_id": session_id})
     if source_name:
-        search_kwargs["filter"] = {"source_name": source_name}
+        filter_conditions.append({"source_name": source_name})
+
+    if len(filter_conditions) == 1:
+        search_kwargs["filter"] = filter_conditions[0]
+    elif len(filter_conditions) > 1:
+        search_kwargs["filter"] = {"$and": filter_conditions}
 
     try:
         results = get_vector_store().similarity_search_with_relevance_scores(
@@ -362,6 +372,7 @@ def ask_question(
 
     documents, sources = _retrieve_context(
         standalone_question,
+        session_id=clean_session_id,
         source_name=source_name,
     )
 

@@ -102,3 +102,12 @@ def test_indexing_with_session_id_isolates_metadata(monkeypatch):
     assert len(fake_store.documents) == 1
     stored = next(iter(fake_store.documents.values()))
     assert stored.metadata.get("session_id") == "user-session-42"
+
+
+def test_semantic_relevance_score_fn():
+    fn = vector_store._semantic_relevance_score_fn
+    assert fn(0.0) == 1.0  # Identical vectors
+    assert fn(2.0) == 0.0  # Orthogonal vectors
+    assert fn(1.0) == 0.5  # Cosine similarity 0.5
+    assert fn(4.0) == 0.0  # Clamped minimum
+    assert fn(-1.0) == 1.0  # Clamped maximum

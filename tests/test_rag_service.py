@@ -222,3 +222,32 @@ def test_ask_question_structured_output_success(monkeypatch):
     assert "256 bits" in result["answer"]
     assert len(result["sources"]) == 1
     assert result["sources"][0]["source_name"] == "crypto.pdf"
+
+
+def test_retrieve_context_filters(monkeypatch):
+    captured_kwargs = []
+
+    class FakeStore:
+        def similarity_search_with_relevance_scores(self, query, **kwargs):
+            captured_kwargs.append(kwargs)
+            return []
+
+    monkeypatch.setattr(rag_service, "get_vector_store", lambda: FakeStore())
+
+    # Neither session_id nor source_name
+    rag_service._retrieve_context("query")
+    assert "filter" not in captured_kwargs[-1]
+
+    # session_id only
+    rag_service._retrieve_context("query", session_id="sess-1")
+    assert captured_kwargs[-1]["filter"] == {"session_id": "sess-1"}
+
+    # source_name only
+    rag_service._retrieve_context("query", source_name="doc.pdf")
+    assert captured_kwargs[-1]["filter"] == {"source_name": "doc.pdf"}
+
+    # Both session_id and source_name
+    rag_service._retrieve_context("query", session_id="sess-1", source_name="doc.pdf")
+    assert captured_kwargs[-1]["filter"] == {
+        "$and": [{"session_id": "sess-1"}, {"source_name": "doc.pdf"}]
+    }
