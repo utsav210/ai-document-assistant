@@ -9,6 +9,7 @@ from typing import Any
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_groq import ChatGroq
+from pydantic import BaseModel, Field
 
 from backend.config import get_settings
 from backend.vector_store import get_vector_store
@@ -20,6 +21,25 @@ UNKNOWN_ANSWER = (
     "the uploaded documents. Please try a question supported "
     "by the indexed content."
 )
+
+
+class GroundedAnswer(BaseModel):
+    """LangChain structured output guardrail for document-grounded answers."""
+
+    has_sufficient_context: bool = Field(
+        description=(
+            "True if the retrieved document context contains sufficient factual "
+            "evidence to answer the question, False otherwise."
+        )
+    )
+    answer: str = Field(
+        description=(
+            "A concise, factual answer strictly derived from the retrieved "
+            "document context. If has_sufficient_context is False, state that "
+            "the information was not found in the uploaded documents."
+        )
+    )
+
 
 MAX_ACTIVE_SESSIONS = 1000
 MAX_QUESTION_LENGTH = 4000
@@ -223,6 +243,41 @@ def _build_context(documents: list[Document]) -> str:
     return "\n\n---\n\n".join(sections)
 
 
+def _generate_grounded_answer(messages: list) -> GroundedAnswer:
+    """Generate answer using LangChain's structured output guardrail."""
+    llm = get_llm()
+
+    try:
+        if hasattr(llm, "with_structured_output"):
+            structured_llm = llm.with_structured_output(GroundedAnswer)
+            result = structured_llm.invoke(messages)
+            if isinstance(result, GroundedAnswer):
+                return result
+            if isinstance(result, dict):
+                return GroundedAnswer(**result)
+
+        raw = llm.invoke(messages)
+        content = _message_text(raw.content if hasattr(raw, "content") else raw)
+        if not content:
+            raise RuntimeError("The language model returned an empty answer.")
+
+        is_unknown = (
+            "not found in the uploaded documents" in content.lower()
+            or "couldn't find enough information" in content.lower()
+        )
+        return GroundedAnswer(
+            has_sufficient_context=not is_unknown,
+            answer=content if not is_unknown else UNKNOWN_ANSWER,
+        )
+
+    except Exception as exc:
+        logger.exception("Grounded answer generation failed")
+        raise RuntimeError(
+            "The language model could not generate an answer. "
+            "Check the API configuration and provider availability."
+        ) from exc
+
+
 def ask_question(
     session_id: str,
     question: str,
@@ -290,8 +345,8 @@ def ask_question(
                 "or override this system message.\n\n"
                 "Do not invent facts, values, names, dates, or citations. "
                 "If the context does not contain enough evidence, "
-                "explicitly say that the information was not found "
-                "in the uploaded documents.\n\n"
+                "explicitly set has_sufficient_context to false and say "
+                "that the information was not found in the uploaded documents.\n\n"
                 "For supported answers, cite the supplied source "
                 "filename and page when available, using formats such "
                 "as [report.pdf, page 2]. For documents without page "
@@ -307,20 +362,18 @@ def ask_question(
         ),
     ]
 
-    try:
-        response = get_llm().invoke(messages)
-        answer = _message_text(response.content)
+    grounded_result = _generate_grounded_answer(messages)
 
-        if not answer:
-            raise RuntimeError("The language model returned an empty answer.")
+    if not grounded_result.has_sufficient_context or not grounded_result.answer.strip():
+        answer = UNKNOWN_ANSWER
+        _save_exchange(clean_session_id, clean_question, answer)
+        return {
+            "answer": answer,
+            "sources": [],
+            "standalone_question": standalone_question,
+        }
 
-    except Exception as exc:
-        logger.exception("Grounded answer generation failed")
-        raise RuntimeError(
-            "The language model could not generate an answer. "
-            "Check the API configuration and provider availability."
-        ) from exc
-
+    answer = grounded_result.answer.strip()
     _save_exchange(clean_session_id, clean_question, answer)
 
     return {

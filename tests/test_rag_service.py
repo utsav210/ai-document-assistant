@@ -129,3 +129,74 @@ def test_ask_question_grounded_success(monkeypatch):
     assert len(history) == 1
     assert history[0]["question"] == "What does the policy say about authentication?"
     assert "2FA is required" in history[0]["answer"]
+
+
+def test_ask_question_guardrail_refusal_when_unsupported(monkeypatch):
+    """Verify that LangChain guardrail returns UNKNOWN_ANSWER when context is insufficient."""
+    test_doc = Document(
+        page_content="Unrelated vacation guidelines.",
+        metadata={"source_name": "hr_guide.pdf", "page_number": 1},
+    )
+
+    class FakeVectorStore:
+        def similarity_search_with_relevance_scores(self, *args, **kwargs):
+            return [(test_doc, 0.80)]
+
+    class FakeStructuredLLM:
+        def invoke(self, messages):
+            return rag_service.GroundedAnswer(
+                has_sufficient_context=False,
+                answer="No relevant policy found.",
+            )
+
+    class FakeLLM:
+        def with_structured_output(self, schema):
+            return FakeStructuredLLM()
+
+        def invoke(self, messages):
+            return AIMessage(content="No relevant policy found.")
+
+    monkeypatch.setattr(rag_service, "get_vector_store", lambda: FakeVectorStore())
+    monkeypatch.setattr(rag_service, "get_llm", lambda: FakeLLM())
+
+    result = ask_question("test-session", "What is the encryption key length?")
+
+    assert result["answer"] == UNKNOWN_ANSWER
+    assert result["sources"] == []
+    history = get_conversation_history("test-session")
+    assert history[0]["answer"] == UNKNOWN_ANSWER
+
+
+def test_ask_question_structured_output_success(monkeypatch):
+    """Verify that LangChain structured output guardrail returns grounded answer."""
+    test_doc = Document(
+        page_content="Encryption keys must be at least 256 bits.",
+        metadata={"source_name": "crypto.pdf", "page_number": 3},
+    )
+
+    class FakeVectorStore:
+        def similarity_search_with_relevance_scores(self, *args, **kwargs):
+            return [(test_doc, 0.90)]
+
+    class FakeStructuredLLM:
+        def invoke(self, messages):
+            return rag_service.GroundedAnswer(
+                has_sufficient_context=True,
+                answer="Encryption keys must be at least 256 bits [crypto.pdf, page 3].",
+            )
+
+    class FakeLLM:
+        def with_structured_output(self, schema):
+            return FakeStructuredLLM()
+
+        def invoke(self, messages):
+            return AIMessage(content="Encryption keys must be at least 256 bits.")
+
+    monkeypatch.setattr(rag_service, "get_vector_store", lambda: FakeVectorStore())
+    monkeypatch.setattr(rag_service, "get_llm", lambda: FakeLLM())
+
+    result = ask_question("test-session", "What is the required key length?")
+
+    assert "256 bits" in result["answer"]
+    assert len(result["sources"]) == 1
+    assert result["sources"][0]["source_name"] == "crypto.pdf"
