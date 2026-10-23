@@ -47,6 +47,28 @@ def test_clear_conversation_history():
     assert get_conversation_history(session_id) == []
 
 
+def test_get_session_messages_trimming():
+    session_id = "test-session"
+    for i in range(5):
+        rag_service._save_exchange(session_id, f"User Q{i}", f"AI A{i}")
+
+    messages = rag_service.get_session_messages(session_id)
+    assert len(messages) == 6  # 3 turns = 6 messages
+    assert messages[0].content == "User Q2"
+    assert messages[1].content == "AI A2"
+    assert messages[-1].content == "AI A4"
+
+
+def test_format_history_with_langchain_messages():
+    session_id = "test-session"
+    rag_service._save_exchange(session_id, "Hello", "Hi there")
+    messages = rag_service.get_session_messages(session_id)
+
+    formatted = rag_service._format_history(messages)
+    assert "Human: Hello" in formatted
+    assert "AI: Hi there" in formatted
+
+
 def test_ask_question_validation_errors():
     with pytest.raises(ValueError, match="session_id is required"):
         ask_question("", "Valid question")
