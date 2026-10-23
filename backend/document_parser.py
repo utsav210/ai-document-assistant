@@ -365,12 +365,12 @@ def lazy_parse_document(
             import pymupdf
             import pymupdf4llm
 
-            doc = pymupdf.open(str(path))
-            for page_idx in range(len(doc)):
-                chunk = pymupdf4llm.to_markdown(doc, pages=[page_idx])
-                normalized = _normalize_markdown(chunk)
-                if normalized:
-                    yield (page_idx + 1, normalized)
+            with pymupdf.open(str(path)) as doc:
+                for page_idx in range(len(doc)):
+                    chunk = pymupdf4llm.to_markdown(doc, pages=[page_idx])
+                    normalized = _normalize_markdown(chunk)
+                    if normalized:
+                        yield (page_idx + 1, normalized)
             return
         except Exception:  # noqa: BLE001
             parsed = _parse_pdf(path)

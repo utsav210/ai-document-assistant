@@ -10,7 +10,6 @@ from langchain_core.messages import (
     AIMessage,
     BaseMessage,
     HumanMessage,
-    SystemMessage,
     get_buffer_string,
     trim_messages,
 )
@@ -136,18 +135,18 @@ def clear_conversation_history(session_id: str) -> None:
         _conversations.pop(session_id, None)
 
 
-def _format_history(history: list[dict[str, str]] | list[BaseMessage]) -> str:
+def _format_history(history: list[BaseMessage] | list[dict[str, str]]) -> str:
     """Format past conversation turns into plain text using LangChain get_buffer_string."""
     if not history:
         return "No previous conversation."
 
-    if isinstance(history[0], dict):
-        return "\n".join(
-            f"User: {turn['question']}\nAssistant: {turn['answer']}"
-            for turn in history[-CONVERSATION_TURNS:]
-        )
+    if isinstance(history[0], BaseMessage):
+        return get_buffer_string(history)
 
-    return get_buffer_string(history)
+    return "\n".join(
+        f"User: {turn['question']}\nAssistant: {turn['answer']}"
+        for turn in history[-CONVERSATION_TURNS:]
+    )
 
 
 def _message_text(content: Any) -> str:
@@ -166,32 +165,50 @@ def _message_text(content: Any) -> str:
     return str(content).strip()
 
 
-def _rewrite_follow_up(question: str, history: list[dict[str, str]]) -> str:
+REWRITE_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            (
+                "Rewrite the latest question as a concise, "
+                "standalone search query. Use the conversation "
+                "to resolve pronouns and references. Do not "
+                "answer the question or introduce new facts. "
+                "Return only the rewritten query."
+            ),
+        ),
+        MessagesPlaceholder(variable_name="history"),
+        ("human", "{question}"),
+    ]
+)
+
+
+def _rewrite_follow_up(
+    question: str,
+    history: list[BaseMessage] | list[dict[str, str]],
+) -> str:
     """Resolve pronouns and conversational references into a standalone search query."""
     if not history:
         return question
 
-    history_text = _format_history(history)
+    messages_history: list[BaseMessage]
+    if isinstance(history[0], BaseMessage):
+        messages_history = history  # type: ignore[assignment]
+    else:
+        messages_history = []
+        for turn in history:
+            messages_history.extend(
+                [
+                    HumanMessage(content=turn["question"]),
+                    AIMessage(content=turn["answer"]),
+                ]
+            )
 
     try:
-        response = get_llm().invoke(
-            [
-                SystemMessage(
-                    content=(
-                        "Rewrite the latest question as a concise, "
-                        "standalone search query. Use the conversation "
-                        "to resolve pronouns and references. Do not "
-                        "answer the question or introduce new facts. "
-                        "Return only the rewritten query."
-                    )
-                ),
-                HumanMessage(
-                    content=(
-                        f"Conversation:\n{history_text}\n\nLatest question:\n{question}"
-                    )
-                ),
-            ]
+        prompt_value = REWRITE_PROMPT.invoke(
+            {"history": messages_history, "question": question}
         )
+        response = get_llm().invoke(prompt_value.to_messages())
 
         rewritten = _message_text(response.content)
         if rewritten:
@@ -203,12 +220,8 @@ def _rewrite_follow_up(question: str, history: list[dict[str, str]]) -> str:
             exc,
         )
 
-    previous = history[-1]
-    return (
-        f"Previous question: {previous['question']}\n"
-        f"Previous answer: {previous['answer']}\n"
-        f"Current question: {question}"
-    )[:2500]
+    fallback_context = get_buffer_string(messages_history[-2:])
+    return f"{fallback_context}\nHuman: {question}"[:2500]
 
 
 def _retrieve_context(
@@ -367,8 +380,7 @@ def ask_question(
         )
 
     session_messages = get_session_messages(clean_session_id)
-    history = get_conversation_history(clean_session_id)
-    standalone_question = _rewrite_follow_up(clean_question, history)
+    standalone_question = _rewrite_follow_up(clean_question, session_messages)
 
     documents, sources = _retrieve_context(
         standalone_question,

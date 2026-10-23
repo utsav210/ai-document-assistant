@@ -251,3 +251,38 @@ def test_retrieve_context_filters(monkeypatch):
     assert captured_kwargs[-1]["filter"] == {
         "$and": [{"session_id": "sess-1"}, {"source_name": "doc.pdf"}]
     }
+
+
+def test_rewrite_follow_up_empty_history():
+    assert rag_service._rewrite_follow_up("What is 2FA?", []) == "What is 2FA?"
+
+
+def test_rewrite_follow_up_with_llm(monkeypatch):
+    class FakeRewriteLLM:
+        def invoke(self, messages):
+            return AIMessage(content="How do I configure two-factor authentication?")
+
+    monkeypatch.setattr(rag_service, "get_llm", lambda: FakeRewriteLLM())
+
+    history = [
+        rag_service.HumanMessage(content="What is two-factor authentication?"),
+        rag_service.AIMessage(content="It is an extra layer of security."),
+    ]
+    rewritten = rag_service._rewrite_follow_up("How do I configure it?", history)
+    assert rewritten == "How do I configure two-factor authentication?"
+
+
+def test_rewrite_follow_up_fallback_on_error(monkeypatch):
+    class FailingLLM:
+        def invoke(self, messages):
+            raise RuntimeError("API failure")
+
+    monkeypatch.setattr(rag_service, "get_llm", lambda: FailingLLM())
+
+    history = [
+        rag_service.HumanMessage(content="What is encryption?"),
+        rag_service.AIMessage(content="Securing data at rest."),
+    ]
+    rewritten = rag_service._rewrite_follow_up("Is it required?", history)
+    assert "Securing data at rest" in rewritten
+    assert "Human: Is it required?" in rewritten
