@@ -38,3 +38,6 @@ Thumbs.db
 .streamlit/secrets.toml
 # Assessment specifications
 /Practical Assessment_ AI_ML Engineer_fresher.pdf
+
+# Local agents and skills
+.agents/
