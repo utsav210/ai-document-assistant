@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
@@ -21,7 +21,11 @@ from backend.document_parser import (
     parse_document as parse_document_file,
 )
 from backend.logging_config import configure_logging
-from backend.rag_service import ask_question
+from backend.rag_service import (
+    ask_question,
+    clear_conversation_history,
+    get_conversation_history,
+)
 from backend.vector_store import index_parsed_document
 
 settings = get_settings()
@@ -349,3 +353,35 @@ async def chat(request: ChatRequest) -> ChatResponse:
         sources=result["sources"],
         standalone_question=result["standalone_question"],
     )
+
+
+@app.get(
+    "/chat/history/{session_id}",
+    tags=["chat"],
+)
+async def get_session_chat_history(session_id: str) -> dict[str, Any]:
+    """Retrieve the recent conversational exchanges (up to 3 turns) for a session."""
+    clean_id = session_id.strip()
+    if not clean_id:
+        raise HTTPException(
+            status_code=422,
+            detail="session_id must not be empty.",
+        )
+    history = await run_in_threadpool(get_conversation_history, clean_id)
+    return {"session_id": clean_id, "turns": history}
+
+
+@app.delete(
+    "/chat/history/{session_id}",
+    tags=["chat"],
+)
+async def clear_session_chat_history(session_id: str) -> dict[str, str]:
+    """Clear conversational memory for a session without modifying indexed documents."""
+    clean_id = session_id.strip()
+    if not clean_id:
+        raise HTTPException(
+            status_code=422,
+            detail="session_id must not be empty.",
+        )
+    await run_in_threadpool(clear_conversation_history, clean_id)
+    return {"status": "cleared", "session_id": clean_id}

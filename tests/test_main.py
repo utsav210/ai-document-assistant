@@ -218,3 +218,39 @@ def test_chat_endpoint_runtime_error_returns_503(monkeypatch) -> None:
     )
     assert response.status_code == 503
     assert "Unable to answer" in response.json()["detail"]
+
+
+def test_get_and_clear_chat_history(monkeypatch) -> None:
+    """Verify retrieving and clearing conversation history via API."""
+    mock_history = [{"question": "Q1", "answer": "A1"}]
+    cleared = []
+
+    monkeypatch.setattr(
+        "backend.main.get_conversation_history",
+        lambda sid: mock_history,
+    )
+    monkeypatch.setattr(
+        "backend.main.clear_conversation_history",
+        lambda sid: cleared.append(sid),
+    )
+
+    # Test GET history
+    get_res = client.get("/chat/history/test-session-123")
+    assert get_res.status_code == 200
+    assert get_res.json() == {
+        "session_id": "test-session-123",
+        "turns": [{"question": "Q1", "answer": "A1"}],
+    }
+
+    # Test DELETE history
+    del_res = client.delete("/chat/history/test-session-123")
+    assert del_res.status_code == 200
+    assert del_res.json() == {
+        "status": "cleared",
+        "session_id": "test-session-123",
+    }
+    assert "test-session-123" in cleared
+
+    # Validation errors on empty session ID
+    assert client.get("/chat/history/%20%20").status_code == 422
+    assert client.delete("/chat/history/%20%20").status_code == 422
