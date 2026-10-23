@@ -1,5 +1,10 @@
+from __future__ import annotations
+
 import logging
 import tempfile
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Annotated
 
@@ -16,6 +21,7 @@ from backend.document_parser import (
     parse_document as parse_document_file,
 )
 from backend.logging_config import configure_logging
+from backend.vector_store import index_parsed_document
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -26,7 +32,7 @@ MAX_UPLOAD_MB = settings.max_upload_mb
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 UPLOAD_CHUNK_SIZE = 1024 * 1024
 
-# defined the app
+
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
@@ -36,7 +42,7 @@ app = FastAPI(
 
 @app.get("/", tags=["system"])
 def root() -> dict[str, str]:
-    """Return top-level API metadata and operational status."""
+    """Return service metadata and operational status."""
     return {
         "service": settings.app_name,
         "status": "running",
@@ -45,7 +51,7 @@ def root() -> dict[str, str]:
 
 @app.get("/health", tags=["system"])
 def health() -> dict[str, str]:
-    """Return service health status for container and monitoring probes."""
+    """Return service health status."""
     logger.debug("Health check requested")
 
     return {
@@ -54,21 +60,13 @@ def health() -> dict[str, str]:
     }
 
 
-class DocumentParseResponse(BaseModel):
-    source_name: str
-    file_type: str
-    extraction_method: str
-    page_count: int | None
-    character_count: int
-    preview: str
-    warnings: list[str]
-
-
-@app.post("/documents/parse", response_model=DocumentParseResponse, tags=["documents"])
-async def parse_uploaded_document(
-    file: Annotated[UploadFile, File(description="PDF, DOCX or TXT document")],
-) -> DocumentParseResponse:
+@asynccontextmanager
+async def _stage_upload(
+    file: UploadFile,
+) -> AsyncIterator[tuple[str, Path]]:
+    """Validate and temporarily store an uploaded document."""
     try:
+        # Normalize both Windows and POSIX-style filename paths.
         original_name = (file.filename or "").replace("\\", "/")
         original_name = Path(original_name).name
 
@@ -83,14 +81,11 @@ async def parse_uploaded_document(
         if extension not in SUPPORTED_EXTENSIONS:
             raise HTTPException(
                 status_code=415,
-                detail="Unsupported file type. Upload a PDF, DOCX or TXT file.",
+                detail="Unsupported file type. Upload a PDF, DOCX, or TXT document.",
             )
 
-        with tempfile.TemporaryDirectory(
-            prefix="ai-document-assistant-"
-        ) as temporary_directory:
-            temporary_path = Path(temporary_directory) / f"upload{extension}"
-
+        with tempfile.TemporaryDirectory(prefix="ai-document-assistant-") as directory:
+            temporary_path = Path(directory) / f"upload{extension}"
             total_bytes = 0
 
             with temporary_path.open("wb") as destination:
@@ -118,31 +113,139 @@ async def parse_uploaded_document(
                     detail="The uploaded file is empty.",
                 )
 
-            try:
-                parsed = await run_in_threadpool(
-                    parse_document_file,
-                    temporary_path,
-                )
-            except DocumentParsingError as exc:
-                logger.warning(
-                    "Document parsing failed for %s: %s",
-                    original_name,
-                    exc,
-                )
-                raise HTTPException(
-                    status_code=422,
-                    detail="Unable to extract readable content from this document.",
-                ) from exc
-
-            return DocumentParseResponse(
-                source_name=original_name,
-                file_type=parsed.file_type,
-                extraction_method=parsed.extraction_method,
-                page_count=parsed.page_count,
-                character_count=len(parsed.content),
-                preview=parsed.content[:1200],
-                warnings=list(parsed.warnings),
-            )
+            yield original_name, temporary_path
 
     finally:
         await file.close()
+
+
+class DocumentParseResponse(BaseModel):
+    source_name: str
+    file_type: str
+    extraction_method: str
+    page_count: int | None
+    character_count: int
+    preview: str
+    warnings: list[str]
+
+
+@app.post(
+    "/documents/parse",
+    response_model=DocumentParseResponse,
+    tags=["documents"],
+)
+async def parse_uploaded_document(
+    file: Annotated[
+        UploadFile,
+        File(description="PDF, DOCX or TXT document"),
+    ],
+) -> DocumentParseResponse:
+    """Extract document content and return a preview."""
+    async with _stage_upload(file) as (original_name, temporary_path):
+        try:
+            parsed = await run_in_threadpool(
+                parse_document_file,
+                temporary_path,
+            )
+        except DocumentParsingError as exc:
+            logger.warning(
+                "Parsing failed for %s: %s",
+                original_name,
+                exc,
+            )
+            raise HTTPException(
+                status_code=422,
+                detail="Unable to extract readable document content.",
+            ) from exc
+
+        # Restore the uploaded filename instead of keeping upload.pdf.
+        parsed = replace(parsed, source_name=original_name)
+
+        return DocumentParseResponse(
+            source_name=parsed.source_name,
+            file_type=parsed.file_type,
+            extraction_method=parsed.extraction_method,
+            page_count=parsed.page_count,
+            character_count=len(parsed.content),
+            preview=parsed.content[:1200],
+            warnings=list(parsed.warnings),
+        )
+
+
+class DocumentIndexResponse(BaseModel):
+    status: str
+    source_id: str
+    source_name: str
+    file_type: str
+    extraction_method: str
+    page_count: int | None
+    chunk_count: int
+    content_hash: str
+    collection_name: str
+    persist_directory: str
+    warnings: list[str]
+
+
+@app.post(
+    "/documents/index",
+    response_model=DocumentIndexResponse,
+    tags=["documents"],
+)
+async def index_uploaded_document(
+    file: Annotated[
+        UploadFile,
+        File(description="PDF, DOCX or TXT document"),
+    ],
+) -> DocumentIndexResponse:
+    """Parse, chunk, embed, and persist an uploaded document."""
+    async with _stage_upload(file) as (original_name, temporary_path):
+        try:
+            parsed = await run_in_threadpool(
+                parse_document_file,
+                temporary_path,
+            )
+        except DocumentParsingError as exc:
+            logger.warning(
+                "Parsing failed for %s: %s",
+                original_name,
+                exc,
+            )
+            raise HTTPException(
+                status_code=422,
+                detail="Unable to extract readable document content.",
+            ) from exc
+
+        # This must happen BEFORE chunking and indexing.
+        parsed = replace(parsed, source_name=original_name)
+
+        try:
+            result = await run_in_threadpool(
+                index_parsed_document,
+                parsed,
+            )
+        except Exception as exc:
+            logger.exception(
+                "Indexing failed for %s",
+                original_name,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Document parsing succeeded, but indexing failed. "
+                    "Check the application logs."
+                ),
+            ) from exc
+
+        return DocumentIndexResponse(
+            status="indexed",
+            source_id=result["source_id"],
+            source_name=original_name,
+            file_type=parsed.file_type,
+            extraction_method=parsed.extraction_method,
+            page_count=parsed.page_count,
+            chunk_count=result["chunk_count"],
+            content_hash=result["content_hash"],
+            collection_name=result["collection_name"],
+            persist_directory=result["persist_directory"],
+            warnings=list(parsed.warnings),
+        )

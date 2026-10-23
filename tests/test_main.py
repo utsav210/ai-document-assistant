@@ -62,3 +62,50 @@ def test_parse_uploaded_document_empty_file() -> None:
 
     assert response.status_code == 400
     assert "empty" in response.json()["detail"].lower()
+
+
+def test_index_uploaded_document_success(monkeypatch) -> None:
+    """Verify that uploading a valid document indexes successfully."""
+    monkeypatch.setattr(
+        "backend.main.index_parsed_document",
+        lambda parsed: {
+            "source_id": "test-source-id-12345",
+            "source_name": parsed.source_name,
+            "file_type": parsed.file_type,
+            "extraction_method": parsed.extraction_method,
+            "chunk_count": 2,
+            "content_hash": "hash123",
+            "collection_name": "ai_document_assistant",
+            "persist_directory": "./chroma_db",
+        },
+    )
+
+    content = b"Paragraph 1.\n\nParagraph 2."
+    response = client.post(
+        "/documents/index",
+        files={"file": ("notes.txt", content, "text/plain")},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "indexed"
+    assert data["source_name"] == "notes.txt"
+    assert data["source_id"] == "test-source-id-12345"
+    assert data["chunk_count"] == 2
+
+
+def test_index_uploaded_document_indexing_failure(monkeypatch) -> None:
+    """Verify that indexing failure returns 500 Internal Server Error."""
+
+    def fail_index(parsed):
+        raise RuntimeError("Vector store failure")
+
+    monkeypatch.setattr("backend.main.index_parsed_document", fail_index)
+
+    response = client.post(
+        "/documents/index",
+        files={"file": ("notes.txt", b"Valid content", "text/plain")},
+    )
+
+    assert response.status_code == 500
+    assert "indexing failed" in response.json()["detail"].lower()
