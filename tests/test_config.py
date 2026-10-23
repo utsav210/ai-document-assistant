@@ -11,6 +11,7 @@ def test_get_settings_default() -> None:
     assert settings.app_version == "0.1.0"
     assert settings.chunk_size > settings.chunk_overlap
     assert settings.retrieval_top_k >= 1
+    assert settings.retrieval_min_relevance == 0.20
     assert settings.max_upload_mb >= 1
     assert settings.chroma_persist_directory.is_absolute()
 
@@ -46,3 +47,29 @@ def test_read_int_below_minimum(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TEST_MIN_INT", "0")
     with pytest.raises(ValueError, match="must be at least 1"):
         _read_int("TEST_MIN_INT", default=5, minimum=1)
+
+
+def test_read_float_valid(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify float parsing and range validation from environment variables."""
+    from backend.config import _read_float
+
+    monkeypatch.setenv("TEST_FLOAT_VAR", "0.75")
+    assert _read_float("TEST_FLOAT_VAR", default=0.20) == 0.75
+
+
+def test_read_float_out_of_bounds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify that float values outside range raise ValueError."""
+    from backend.config import _read_float
+
+    monkeypatch.setenv("TEST_FLOAT_VAR", "1.5")
+    with pytest.raises(ValueError, match="between 0.0 and 1.0"):
+        _read_float("TEST_FLOAT_VAR", default=0.20, minimum=0.0, maximum=1.0)
+
+
+def test_read_float_invalid_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify that non-float values raise ValueError."""
+    from backend.config import _read_float
+
+    monkeypatch.setenv("TEST_FLOAT_VAR", "invalid_float")
+    with pytest.raises(ValueError, match="must be a valid float"):
+        _read_float("TEST_FLOAT_VAR", default=0.20)

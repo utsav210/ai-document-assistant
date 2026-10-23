@@ -36,6 +36,26 @@ def _read_int(name: str, default: int, minimum: int = 1) -> int:
     return value
 
 
+def _read_float(
+    name: str,
+    default: float,
+    minimum: float = 0.0,
+    maximum: float = 1.0,
+) -> float:
+    """Parse a float environment variable with range validation."""
+    raw_value = os.getenv(name, str(default))
+
+    try:
+        value = float(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a valid float.") from exc
+
+    if not (minimum <= value <= maximum):
+        raise ValueError(f"{name} must be between {minimum} and {maximum}.")
+
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     """Immutable application settings container."""
@@ -52,6 +72,7 @@ class Settings:
     chunk_overlap: int
     retrieval_top_k: int
     chroma_persist_directory: Path
+    retrieval_min_relevance: float = 0.20
     chroma_collection_name: str = "ai_document_assistant"
 
 
@@ -77,7 +98,9 @@ def get_settings() -> Settings:
     if chunk_overlap >= chunk_size:
         raise ValueError("CHUNK_OVERLAP must be smaller than CHUNK_SIZE.")
 
-    chroma_path = Path(os.getenv("CHROMA_PERSIST_DIRECTORY", "./chroma_db"))
+    raw_chroma_path = os.getenv("CHROMA_PERSIST_DIRECTORY", "").strip() or "./chroma_db"
+
+    chroma_path = Path(raw_chroma_path)
 
     if not chroma_path.is_absolute():
         chroma_path = PROJECT_ROOT / chroma_path
@@ -85,7 +108,7 @@ def get_settings() -> Settings:
     return Settings(
         app_name="AI Document Assistant",
         app_version="0.1.0",
-        environment=os.getenv("APP_ENV", "development"),
+        environment=os.getenv("APP_ENV", "development").strip().lower(),
         log_level=log_level,
         groq_api_key=os.getenv("GROQ_API_KEY", "").strip(),
         groq_model=(os.getenv("GROQ_MODEL", "").strip() or "openai/gpt-oss-120b"),
@@ -98,6 +121,7 @@ def get_settings() -> Settings:
         chunk_overlap=chunk_overlap,
         retrieval_top_k=_read_int("RETRIEVAL_TOP_K", 4),
         chroma_persist_directory=chroma_path,
+        retrieval_min_relevance=_read_float("RETRIEVAL_MIN_RELEVANCE", 0.20),
         chroma_collection_name=(
             os.getenv("CHROMA_COLLECTION_NAME", "").strip() or "ai_document_assistant"
         ),
