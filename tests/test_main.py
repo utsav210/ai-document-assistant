@@ -135,3 +135,86 @@ def test_index_uploaded_document_missing_session_id() -> None:
     )
 
     assert response.status_code == 422
+
+
+def test_chat_endpoint_success(monkeypatch) -> None:
+    """Verify that valid chat requests return grounded responses."""
+    monkeypatch.setattr(
+        "backend.main.ask_question",
+        lambda session_id, question, source_name=None: {
+            "answer": "Multi-factor authentication is required.",
+            "sources": [
+                {
+                    "source_name": "security.pdf",
+                    "file_type": "pdf",
+                    "page_number": 1,
+                    "extraction_method": "pymupdf4llm",
+                    "chunk_index": 0,
+                }
+            ],
+            "standalone_question": "What authentication policy applies?",
+        },
+    )
+
+    response = client.post(
+        "/chat",
+        json={
+            "session_id": "test-session",
+            "question": "What is the auth policy?",
+            "source_name": "security.pdf",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "Multi-factor" in data["answer"]
+    assert len(data["sources"]) == 1
+    assert data["sources"][0]["source_name"] == "security.pdf"
+    assert data["standalone_question"] == "What authentication policy applies?"
+
+
+def test_chat_endpoint_empty_fields() -> None:
+    """Verify that whitespace-only session_id and question return 422."""
+    res1 = client.post(
+        "/chat",
+        json={"session_id": "   ", "question": "Valid question"},
+    )
+    assert res1.status_code == 422
+
+    res2 = client.post(
+        "/chat",
+        json={"session_id": "session-1", "question": "   "},
+    )
+    assert res2.status_code == 422
+
+
+def test_chat_endpoint_value_error_handling(monkeypatch) -> None:
+    """Verify that ValueError raised from RAG service returns 422."""
+
+    def fail_validation(session_id, question, source_name=None):
+        raise ValueError("Invalid parameters.")
+
+    monkeypatch.setattr("backend.main.ask_question", fail_validation)
+
+    response = client.post(
+        "/chat",
+        json={"session_id": "session-1", "question": "Valid question"},
+    )
+    assert response.status_code == 422
+    assert "Invalid parameters." in response.json()["detail"]
+
+
+def test_chat_endpoint_runtime_error_returns_503(monkeypatch) -> None:
+    """Verify that RuntimeError raised from RAG service returns 503."""
+
+    def fail_llm(session_id, question, source_name=None):
+        raise RuntimeError("LLM unavailable")
+
+    monkeypatch.setattr("backend.main.ask_question", fail_llm)
+
+    response = client.post(
+        "/chat",
+        json={"session_id": "session-1", "question": "Valid question"},
+    )
+    assert response.status_code == 503
+    assert "Unable to answer" in response.json()["detail"]

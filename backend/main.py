@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from backend.config import get_settings
@@ -21,6 +21,7 @@ from backend.document_parser import (
     parse_document as parse_document_file,
 )
 from backend.logging_config import configure_logging
+from backend.rag_service import ask_question
 from backend.vector_store import index_parsed_document
 
 settings = get_settings()
@@ -267,3 +268,84 @@ async def index_uploaded_document(
             persist_directory=result["persist_directory"],
             warnings=list(parsed.warnings),
         )
+
+
+class ChatRequest(BaseModel):
+    """Validated request for a document-grounded chat interaction."""
+
+    session_id: str = Field(min_length=1, max_length=128)
+    question: str = Field(min_length=1, max_length=4000)
+    source_name: str | None = Field(default=None, max_length=255)
+
+
+class SourceCitation(BaseModel):
+    """A source reference supporting a generated answer."""
+
+    source_name: str
+    file_type: str | None = None
+    page_number: int | None = None
+    extraction_method: str | None = None
+    chunk_index: int | None = None
+
+
+class ChatResponse(BaseModel):
+    """Response containing an answer and its supporting sources."""
+
+    answer: str
+    sources: list[SourceCitation]
+    standalone_question: str
+
+
+@app.post(
+    "/chat",
+    response_model=ChatResponse,
+    tags=["chat"],
+)
+async def chat(request: ChatRequest) -> ChatResponse:
+    """Answer a question using documents indexed for the session."""
+    session_id = request.session_id.strip()
+    question = request.question.strip()
+    source_name = request.source_name.strip() or None if request.source_name else None
+
+    if not session_id:
+        raise HTTPException(
+            status_code=422,
+            detail="session_id must not be empty.",
+        )
+
+    if not question:
+        raise HTTPException(
+            status_code=422,
+            detail="Question must not be empty.",
+        )
+
+    try:
+        result = await run_in_threadpool(
+            ask_question,
+            session_id,
+            question,
+            source_name=source_name,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=str(exc),
+        ) from exc
+    except RuntimeError as exc:
+        logger.exception(
+            "Chat request failed for session %s",
+            session_id,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Unable to answer the question at this time. "
+                "Check the application logs."
+            ),
+        ) from exc
+
+    return ChatResponse(
+        answer=result["answer"],
+        sources=result["sources"],
+        standalone_question=result["standalone_question"],
+    )
