@@ -14,7 +14,8 @@ python-dotenv
 python-multipart
 
 pymupdf
-pdfplumber
+pymupdf4llm 
+python-docx
 pytesseract
 pillow
 
