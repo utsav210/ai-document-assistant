@@ -52,6 +52,7 @@ class Settings:
     chunk_overlap: int
     retrieval_top_k: int
     chroma_persist_directory: Path
+    chroma_collection_name: str = "ai_document_assistant"
 
 
 @lru_cache(maxsize=1)
@@ -76,9 +77,7 @@ def get_settings() -> Settings:
     if chunk_overlap >= chunk_size:
         raise ValueError("CHUNK_OVERLAP must be smaller than CHUNK_SIZE.")
 
-    chroma_path = Path(
-        os.getenv("CHROMA_PERSIST_DIRECTORY", "./chroma_db")
-    )
+    chroma_path = Path(os.getenv("CHROMA_PERSIST_DIRECTORY", "./chroma_db"))
 
     if not chroma_path.is_absolute():
         chroma_path = PROJECT_ROOT / chroma_path
@@ -89,10 +88,7 @@ def get_settings() -> Settings:
         environment=os.getenv("APP_ENV", "development"),
         log_level=log_level,
         groq_api_key=os.getenv("GROQ_API_KEY", "").strip(),
-        groq_model=(
-            os.getenv("GROQ_MODEL", "").strip()
-            or "openai/gpt-oss-120b"
-        ),
+        groq_model=(os.getenv("GROQ_MODEL", "").strip() or "openai/gpt-oss-120b"),
         embedding_model=(
             os.getenv("EMBEDDING_MODEL", "").strip()
             or "sentence-transformers/all-MiniLM-L6-v2"
@@ -102,4 +98,7 @@ def get_settings() -> Settings:
         chunk_overlap=chunk_overlap,
         retrieval_top_k=_read_int("RETRIEVAL_TOP_K", 4),
         chroma_persist_directory=chroma_path,
+        chroma_collection_name=(
+            os.getenv("CHROMA_COLLECTION_NAME", "").strip() or "ai_document_assistant"
+        ),
     )
