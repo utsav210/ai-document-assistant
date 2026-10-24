@@ -26,7 +26,11 @@ from backend.rag_service import (
     clear_conversation_history,
     get_conversation_history,
 )
-from backend.vector_store import index_parsed_document
+from backend.vector_store import (
+    get_embeddings,
+    get_vector_store,
+    index_parsed_document,
+)
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -38,10 +42,24 @@ MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 UPLOAD_CHUNK_SIZE = 1024 * 1024
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Warm up heavy ML models and vector store client at server startup."""
+    logger.info("Pre-warming embedding model and vector store...")
+    try:
+        await run_in_threadpool(get_embeddings)
+        await run_in_threadpool(get_vector_store)
+        logger.info("Warmup complete. Embedding model and vector store are ready.")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Startup pre-warm failed: %s", exc)
+    yield
+
+
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
     description="A document-grounded conversational AI assistant.",
+    lifespan=lifespan,
 )
 
 

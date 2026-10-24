@@ -8,7 +8,7 @@ import httpx
 import streamlit as st
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000").rstrip("/")
-REQUEST_TIMEOUT = 60.0
+REQUEST_TIMEOUT = 180.0
 
 
 def _init_session_state() -> None:

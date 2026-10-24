@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from functools import lru_cache
 from threading import Lock
+from typing import Any
 
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -11,18 +11,29 @@ from backend.config import get_settings
 from backend.document_parser import ParsedDocument
 
 _INDEX_LOCK = Lock()
+_STORE_LOCK = Lock()
+_EMBEDDINGS_LOCK = Lock()
+
+_CACHED_EMBEDDINGS: HuggingFaceEmbeddings | None = None
+_CACHED_STORE: Chroma | None = None
+_CHROMA_CLIENT: Any = None
 
 
-@lru_cache(maxsize=1)
 def get_embeddings() -> HuggingFaceEmbeddings:
-    """Load and reuse the local embedding model."""
-    settings = get_settings()
+    """Load and reuse the local embedding model in a thread-safe manner."""
+    global _CACHED_EMBEDDINGS
 
-    return HuggingFaceEmbeddings(
-        model_name=settings.embedding_model,
-        model_kwargs={"device": "cpu"},
-        encode_kwargs={"normalize_embeddings": True},
-    )
+    if _CACHED_EMBEDDINGS is None:
+        with _EMBEDDINGS_LOCK:
+            if _CACHED_EMBEDDINGS is None:
+                settings = get_settings()
+                _CACHED_EMBEDDINGS = HuggingFaceEmbeddings(
+                    model_name=settings.embedding_model,
+                    model_kwargs={"device": "cpu"},
+                    encode_kwargs={"normalize_embeddings": True},
+                )
+
+    return _CACHED_EMBEDDINGS
 
 
 def _semantic_relevance_score_fn(distance: float) -> float:
@@ -35,21 +46,34 @@ def _semantic_relevance_score_fn(distance: float) -> float:
     return max(0.0, min(1.0, 1.0 - distance / 2.0))
 
 
-@lru_cache(maxsize=1)
 def get_vector_store() -> Chroma:
     """Create or reopen the persistent Chroma collection with cosine relevance scoring."""
-    settings = get_settings()
-    settings.chroma_persist_directory.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+    global _CACHED_STORE, _CHROMA_CLIENT
 
-    return Chroma(
-        collection_name=settings.chroma_collection_name,
-        embedding_function=get_embeddings(),
-        persist_directory=str(settings.chroma_persist_directory),
-        relevance_score_fn=_semantic_relevance_score_fn,
-    )
+    if _CACHED_STORE is None:
+        with _STORE_LOCK:
+            if _CACHED_STORE is None:
+                import chromadb
+
+                settings = get_settings()
+                settings.chroma_persist_directory.mkdir(
+                    parents=True,
+                    exist_ok=True,
+                )
+
+                if _CHROMA_CLIENT is None:
+                    _CHROMA_CLIENT = chromadb.PersistentClient(
+                        path=str(settings.chroma_persist_directory)
+                    )
+
+                _CACHED_STORE = Chroma(
+                    client=_CHROMA_CLIENT,
+                    collection_name=settings.chroma_collection_name,
+                    embedding_function=get_embeddings(),
+                    relevance_score_fn=_semantic_relevance_score_fn,
+                )
+
+    return _CACHED_STORE
 
 
 def index_parsed_document(
